@@ -83,7 +83,7 @@ class UnixSocket:
 
         await self._write_single_line(writer, message)
 
-    async def _read_single_line(self, reader: asyncio.StreamReader) -> str:
+    async def _read_single_line(self, reader: asyncio.StreamReader) -> str|None:
         line = bytearray()
         while self.active:
             try:
@@ -91,9 +91,10 @@ class UnixSocket:
             except asyncio.LimitOverrunError:
                 line.extend(await reader.read(reader._limit)) # pyright: ignore [reportUnknownMemberType, reportUnknownArgumentType, reportAttributeAccessIssue]
                 continue
-            except asyncio.IncompleteReadError as err:
-                line.extend(err.partial)
-                break
+            except asyncio.IncompleteReadError:
+                # The protocol only sends newline-terminated messages, so an
+                # incomplete read means that the peer closed the connection.
+                return None
             except asyncio.CancelledError:
                 raise
             else:
@@ -115,15 +116,26 @@ class UnixSocket:
 
     async def _listen_for_method_call(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         self.server_writer = writer
-        while self.active and self.on_new_message:
+        try:
+            while self.active and self.on_new_message:
 
-            def _(task: asyncio.Task[str|None]):
-                res = task.result()
-                if res is not None:
-                    asyncio.create_task(self._write_single_line(writer, res))
+                def _(task: asyncio.Task[str|None]):
+                    res = task.result()
+                    if res is not None:
+                        asyncio.create_task(self._write_single_line(writer, res))
 
-            line = await self._read_single_line(reader)
-            asyncio.create_task(self.on_new_message(line)).add_done_callback(_)
+                line = await self._read_single_line(reader)
+                if line is None:
+                    break
+                asyncio.create_task(self.on_new_message(line)).add_done_callback(_)
+        finally:
+            if self.server_writer is writer:
+                self.server_writer = None
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             
 class PortSocket (UnixSocket):
     def __init__(self):
