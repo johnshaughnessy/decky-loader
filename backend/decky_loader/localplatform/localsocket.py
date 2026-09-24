@@ -92,8 +92,6 @@ class UnixSocket:
                 line.extend(await reader.read(reader._limit)) # pyright: ignore [reportUnknownMemberType, reportUnknownArgumentType, reportAttributeAccessIssue]
                 continue
             except asyncio.IncompleteReadError:
-                # The protocol only sends newline-terminated messages, so an
-                # incomplete read means that the peer closed the connection.
                 return None
             except asyncio.CancelledError:
                 raise
@@ -116,26 +114,17 @@ class UnixSocket:
 
     async def _listen_for_method_call(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         self.server_writer = writer
-        try:
-            while self.active and self.on_new_message:
+        while self.active and self.on_new_message:
 
-                def _(task: asyncio.Task[str|None]):
-                    res = task.result()
-                    if res is not None:
-                        asyncio.create_task(self._write_single_line(writer, res))
+            def _(task: asyncio.Task[str|None]):
+                res = task.result()
+                if res is not None:
+                    asyncio.create_task(self._write_single_line(writer, res))
 
-                line = await self._read_single_line(reader)
-                if line is None:
-                    break
-                asyncio.create_task(self.on_new_message(line)).add_done_callback(_)
-        finally:
-            if self.server_writer is writer:
-                self.server_writer = None
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+            line = await self._read_single_line(reader)
+            if line is None:
+                break
+            asyncio.create_task(self.on_new_message(line)).add_done_callback(_)
             
 class PortSocket (UnixSocket):
     def __init__(self):
